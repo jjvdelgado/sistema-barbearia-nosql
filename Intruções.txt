@@ -1,0 +1,60 @@
+INSTRUÇÕES PARA COMPILAÇÃO E EXECUÇÃO
+Sistema de Gerenciamento de Barbearia
+
+================================================================
+
+PRÉ-REQUISITOS
+
+- Python 3.8 ou superior
+- PostgreSQL instalado e em execução
+- Biblioteca psycopg2
+
+================================================================
+
+PASSO 1: CONFIGURAR O AMBIENTE PYTHON
+
+Abrir terminal na pasta do projeto e executar:
+
+    python -m venv venv
+    venv\Scripts\activate          (Windows)
+    source venv/bin/activate       (Linux/Mac)
+    pip install psycopg2-binary
+
+================================================================
+
+PASSO 2: CRIAR E CONFIGURAR O BANCO DE DADOS
+
+No PostgreSQL, criar o banco de dados:
+
+    CREATE DATABASE barbearia;
+
+Editar o arquivo src/database.py e alterar a senha do PostgreSQL
+na linha que contém:
+    
+    password: str = "postgres"
+
+Substituir "postgres" pela senha correta.
+
+================================================================
+
+PASSO 3: CRIAR AS TABELAS E POPULAR O BANCO DE DADOS
+
+ Para criar as tabelas e popular o banco basta rodar pelo queryTool do pgAdmin os dois arquivos:
+
+    sql/schema.sql -> cria as tabelas
+    sql/populate.sql -> popula o banco
+
+Ou deixar o sistema criar e popular automaticamente na primeira execução.
+
+================================================================
+
+PASSO 4: EXECUTAR A APLICAÇÃO
+
+No terminal, navegar até a pasta src e executar:
+
+    cd src
+    python main.py
+
+O sistema irá conectar ao banco e exibir o menu principal.
+
+================================================================
