@@ -1,223 +1,307 @@
-from database import Database
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sql'))
+from database_mongodb import DatabaseMongo
 from datetime import datetime
 
 class Relatorios:
-    def __init__(self, db: Database):
+    def __init__(self, db: DatabaseMongo):
         self.db = db
     
     def relatorio_atendimentos_periodo(self):
         """Relatório 1: Atendimentos realizados em um período"""
-        print("\n=== RELATÓRIO: ATENDIMENTOS POR PERÍODO ===\n")
+        print("\n=== RELATORIO: ATENDIMENTOS POR PERIODO ===\n")
         
-        data_inicio = input("Data início (DD/MM/AAAA): ").strip()
+        data_inicio = input("Data inicio (DD/MM/AAAA): ").strip()
         data_fim = input("Data fim (DD/MM/AAAA): ").strip()
         
         try:
-            data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y").strftime("%Y-%m-%d")
-            data_fim = datetime.strptime(data_fim, "%d/%m/%Y").strftime("%Y-%m-%d")
+            data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y")
+            data_fim = datetime.strptime(data_fim, "%d/%m/%Y")
+            # Adicionar um dia para incluir todo o dia final
+            data_fim = datetime(data_fim.year, data_fim.month, data_fim.day, 23, 59, 59)
         except ValueError:
-            print("Formato de data inválido! Use DD/MM/AAAA")
+            print("Formato de data invalido! Use DD/MM/AAAA")
             return
         
-        query = """
-            SELECT 
-                a.id_atendimento,
-                COALESCE(a.data_atendimento, a.data_agendada) as data_real,
-                c.nome as cliente,
-                b.nome as barbeiro,
-                a.horario_inicio,
-                a.horario_fim,
-                a.valor_total,
-                a.forma_pagamento,
-                a.tipo
-            FROM atendimento a
-            JOIN cliente c ON a.id_cliente = c.id_cliente
-            JOIN barbeiro b ON a.id_barbeiro = b.id_barbeiro
-            WHERE COALESCE(a.data_atendimento, a.data_agendada) BETWEEN %s AND %s
-                AND a.status = 'finalizado'
-            ORDER BY data_real DESC, a.horario_inicio DESC
-        """
+        # Pipeline de agregação MongoDB
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {
+                            "data_atendimento": {
+                                "$gte": data_inicio,
+                                "$lte": data_fim
+                            }
+                        },
+                        {
+                            "data_agendada": {
+                                "$gte": data_inicio,
+                                "$lte": data_fim
+                            }
+                        }
+                    ],
+                    "status": "finalizado"
+                }
+            },
+            {
+                "$addFields": {
+                    "data_real": {
+                        "$ifNull": ["$data_atendimento", "$data_agendada"]
+                    }
+                }
+            },
+            {
+                "$sort": {"data_real": -1, "horario_inicio": -1}
+            }
+        ]
         
-        resultados = self.db.executar_query(query, (data_inicio, data_fim))
+        resultados = self.db.agregacao("atendimentos", pipeline)
         
         if not resultados:
-            print("\nNenhum atendimento encontrado neste período.")
+            print("\nNenhum atendimento encontrado neste periodo.")
             return
         
-        print(f"{'ID':<5} {'Data':<12} {'Cliente':<25} {'Barbeiro':<20} {'Início':<8} {'Fim':<8} {'Tipo':<10} {'Valor':<12}")
-        print("-" * 110)
+        print(f"{'Data':<12} {'Cliente':<25} {'Barbeiro':<20} {'Inicio':<8} {'Fim':<8} {'Tipo':<10} {'Valor':<12}")
+        print("-" * 95)
         
         total_faturamento = 0
         
-        for resultado in resultados:
-            id_atend, data, cliente, barbeiro, inicio, fim, valor, forma_pag, tipo = resultado
-            data_fmt = datetime.strptime(str(data), "%Y-%m-%d").strftime("%d/%m/%Y")
-            valor_fmt = f"R$ {valor:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.') if valor else "R$ 0,00"
-            inicio_str = str(inicio)[:5] if inicio else "-"
-            fim_str = str(fim)[:5] if fim else "-"
+        for atend in resultados:
+            data_real = atend.get('data_real')
+            data_fmt = data_real.strftime("%d/%m/%Y") if data_real else "-"
+            cliente = atend['cliente']['nome'][:23]
+            barbeiro = atend['barbeiro']['nome'][:18]
+            inicio = atend.get('horario_inicio', '-')
+            fim = atend.get('horario_fim', '-')
+            valor = atend.get('valor_total', 0)
+            tipo = atend.get('tipo', '-')
             
-            print(f"{id_atend:<5} {data_fmt:<12} {cliente:<25} {barbeiro:<20} {inicio_str:<8} {fim_str:<8} {tipo:<10} {valor_fmt:<12}")
+            valor_fmt = f"R$ {valor:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
             
-            if valor:
-                total_faturamento += float(valor)
+            print(f"{data_fmt:<12} {cliente:<25} {barbeiro:<20} {inicio:<8} {fim:<8} {tipo:<10} {valor_fmt:<12}")
+            
+            total_faturamento += valor
         
         total_fmt = f"R$ {total_faturamento:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-        print("-" * 110)
+        print("-" * 95)
         print(f"\nTotal de atendimentos: {len(resultados)}")
         print(f"Faturamento total: {total_fmt}")
     
     def relatorio_servicos_mais_solicitados(self):
         """Relatório 2: Ranking de serviços mais solicitados"""
-        print("\n=== RELATÓRIO: SERVIÇOS MAIS SOLICITADOS ===\n")
+        print("\n=== RELATORIO: SERVICOS MAIS SOLICITADOS ===\n")
         
-        query = """
-            SELECT 
-                s.nome,
-                s.preco,
-                COUNT(ats.id_atendimento) as total_atendimentos,
-                COALESCE(SUM(ats.preco_cobrado), 0) as faturamento_real
-            FROM servico s
-            LEFT JOIN atendimento_servico ats ON s.id_servico = ats.id_servico
-            LEFT JOIN atendimento a ON ats.id_atendimento = a.id_atendimento
-                AND a.status = 'finalizado'
-            WHERE s.ativo = TRUE
-            GROUP BY s.id_servico, s.nome, s.preco
-            HAVING COUNT(ats.id_atendimento) > 0
-            ORDER BY total_atendimentos DESC, faturamento_real DESC
-        """
+        # Pipeline de agregação
+        pipeline = [
+            {
+                "$match": {"status": "finalizado"}
+            },
+            {
+                "$unwind": "$servicos"
+            },
+            {
+                "$group": {
+                    "_id": "$servicos.nome",
+                    "total_atendimentos": {"$sum": 1},
+                    "faturamento": {"$sum": "$servicos.preco_cobrado"},
+                    "preco_medio": {"$avg": "$servicos.preco_cobrado"}
+                }
+            },
+            {
+                "$sort": {"total_atendimentos": -1}
+            }
+        ]
         
-        resultados = self.db.executar_query(query)
+        resultados = self.db.agregacao("atendimentos", pipeline)
         
         if not resultados:
-            print("Nenhum serviço foi solicitado ainda.")
+            print("Nenhum servico foi solicitado ainda.")
             return
         
-        print(f"{'Ranking':<8} {'Serviço':<30} {'Atendimentos':<15} {'Preço Padrão':<15} {'Faturamento':<15}")
+        print(f"{'Ranking':<8} {'Servico':<30} {'Atendimentos':<15} {'Preco Medio':<15} {'Faturamento':<15}")
         print("-" * 83)
         
         ranking = 1
         faturamento_total = 0
         
         for resultado in resultados:
-            nome, preco, atendimentos, faturamento = resultado
-            preco_fmt = f"R$ {preco:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+            nome = resultado['_id'][:28]
+            atendimentos = resultado['total_atendimentos']
+            preco_medio = resultado['preco_medio']
+            faturamento = resultado['faturamento']
+            
+            preco_fmt = f"R$ {preco_medio:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
             faturamento_fmt = f"R$ {faturamento:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
             
             print(f"{ranking}º{'':<6} {nome:<30} {atendimentos:<15} {preco_fmt:<15} {faturamento_fmt:<15}")
             
-            faturamento_total += float(faturamento)
+            faturamento_total += faturamento
             ranking += 1
         
         total_fmt = f"R$ {faturamento_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
         print("-" * 83)
-        print(f"\nFaturamento total dos serviços: {total_fmt}")
+        print(f"\nFaturamento total dos servicos: {total_fmt}")
     
     def relatorio_faturamento_barbeiro(self):
         """Relatório 3: Faturamento por barbeiro em um período"""
-        print("\n=== RELATÓRIO: FATURAMENTO POR BARBEIRO ===\n")
+        print("\n=== RELATORIO: FATURAMENTO POR BARBEIRO ===\n")
         
-        data_inicio = input("Data início (DD/MM/AAAA): ").strip()
+        data_inicio = input("Data inicio (DD/MM/AAAA): ").strip()
         data_fim = input("Data fim (DD/MM/AAAA): ").strip()
         
         try:
-            data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y").strftime("%Y-%m-%d")
-            data_fim = datetime.strptime(data_fim, "%d/%m/%Y").strftime("%Y-%m-%d")
+            data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y")
+            data_fim = datetime.strptime(data_fim, "%d/%m/%Y")
+            data_fim = datetime(data_fim.year, data_fim.month, data_fim.day, 23, 59, 59)
         except ValueError:
-            print("Formato de data inválido! Use DD/MM/AAAA")
+            print("Formato de data invalido! Use DD/MM/AAAA")
             return
         
-        query = """
-            SELECT 
-                b.nome as barbeiro,
-                b.especialidade,
-                b.comissao_percentual,
-                COUNT(DISTINCT a.id_atendimento) as total_atendimentos,
-                COALESCE(SUM(a.valor_total), 0) as faturamento_total,
-                COALESCE(SUM(a.valor_total * b.comissao_percentual / 100), 0) as comissao_total
-            FROM barbeiro b
-            LEFT JOIN atendimento a ON b.id_barbeiro = a.id_barbeiro
-                AND COALESCE(a.data_atendimento, a.data_agendada) BETWEEN %s AND %s
-                AND a.status = 'finalizado'
-            WHERE b.ativo = TRUE
-            GROUP BY b.id_barbeiro, b.nome, b.especialidade, b.comissao_percentual
-            ORDER BY faturamento_total DESC
-        """
+        # Pipeline de agregação
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {
+                            "data_atendimento": {
+                                "$gte": data_inicio,
+                                "$lte": data_fim
+                            }
+                        },
+                        {
+                            "data_agendada": {
+                                "$gte": data_inicio,
+                                "$lte": data_fim
+                            }
+                        }
+                    ],
+                    "status": "finalizado"
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$barbeiro_id",
+                    "nome": {"$first": "$barbeiro.nome"},
+                    "comissao_percentual": {"$first": "$barbeiro.comissao_percentual"},
+                    "total_atendimentos": {"$sum": 1},
+                    "faturamento_total": {"$sum": "$valor_total"},
+                    "comissao_total": {"$sum": "$comissao_barbeiro"}
+                }
+            },
+            {
+                "$sort": {"faturamento_total": -1}
+            }
+        ]
         
-        resultados = self.db.executar_query(query, (data_inicio, data_fim))
+        resultados = self.db.agregacao("atendimentos", pipeline)
+        
+        # Buscar barbeiros ativos que não tiveram atendimentos
+        barbeiros_ativos = self.db.buscar_todos("barbeiros", {"ativo": True})
+        barbeiros_com_atendimento = {str(r['_id']) for r in resultados}
+        
+        # Adicionar barbeiros sem atendimento
+        for barbeiro in barbeiros_ativos:
+            if str(barbeiro['_id']) not in barbeiros_com_atendimento:
+                resultados.append({
+                    "_id": barbeiro['_id'],
+                    "nome": barbeiro['nome'],
+                    "comissao_percentual": barbeiro.get('comissao_percentual', 30.0),
+                    "total_atendimentos": 0,
+                    "faturamento_total": 0.0,
+                    "comissao_total": 0.0
+                })
         
         if not resultados:
             print("Nenhum barbeiro ativo encontrado.")
             return
         
-        print(f"{'Barbeiro':<30} {'Especialidade':<15} {'Atend.':<8} {'Faturamento':<15} {'Comissão':<12}")
+        # Buscar especialidade dos barbeiros
+        barbeiros_info = {}
+        for barbeiro in barbeiros_ativos:
+            barbeiros_info[str(barbeiro['_id'])] = barbeiro.get('especialidade', '-')
+        
+        print(f"{'Barbeiro':<30} {'Especialidade':<15} {'Atend.':<8} {'Faturamento':<15} {'Comissao':<12}")
         print("-" * 80)
         
         total_geral = 0
         total_comissoes = 0
         
         for resultado in resultados:
-            nome, espec, comissao_pct, atendimentos, faturamento, comissao = resultado
+            nome = resultado['nome'][:28]
+            barbeiro_id = str(resultado['_id'])
+            espec = barbeiros_info.get(barbeiro_id, '-')
+            atendimentos = resultado['total_atendimentos']
+            faturamento = resultado['faturamento_total']
+            comissao = resultado['comissao_total']
             
             faturamento_fmt = f"R$ {faturamento:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
             comissao_fmt = f"R$ {comissao:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            espec_fmt = espec if espec else "-"
             
-            print(f"{nome:<30} {espec_fmt:<15} {atendimentos:<8} {faturamento_fmt:<15} {comissao_fmt:<12}")
+            print(f"{nome:<30} {espec:<15} {atendimentos:<8} {faturamento_fmt:<15} {comissao_fmt:<12}")
             
-            total_geral += float(faturamento)
-            total_comissoes += float(comissao)
+            total_geral += faturamento
+            total_comissoes += comissao
+        
+        lucro_liquido = total_geral - total_comissoes
         
         total_geral_fmt = f"R$ {total_geral:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
         total_comissoes_fmt = f"R$ {total_comissoes:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+        lucro_fmt = f"R$ {lucro_liquido:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
         
         print("-" * 80)
         print(f"\nFaturamento total: {total_geral_fmt}")
-        print(f"Total de comissões: {total_comissoes_fmt}")
-        print(f"Lucro líquido: R$ {(total_geral - total_comissoes):,.2f}".replace(',', '_').replace('.', ',').replace('_', '.'))
+        print(f"Total de comissoes: {total_comissoes_fmt}")
+        print(f"Lucro liquido: {lucro_fmt}")
     
     def relatorio_clientes_frequentes(self):
         """Relatório 4: Clientes mais frequentes"""
-        print("\n=== RELATÓRIO: CLIENTES MAIS FREQUENTES ===\n")
+        print("\n=== RELATORIO: CLIENTES MAIS FREQUENTES ===\n")
         
-        query = """
-            SELECT 
-                c.nome,
-                c.telefone,
-                COUNT(DISTINCT a.id_atendimento) as total_atendimentos,
-                COALESCE(SUM(a.valor_total), 0) as valor_gasto,
-                MAX(COALESCE(a.data_atendimento, a.data_agendada)) as ultima_visita,
-                COUNT(DISTINCT CASE 
-                    WHEN a.status = 'agendado' AND a.data_agendada >= CURRENT_DATE 
-                    THEN a.id_atendimento 
-                END) as agendamentos_futuros
-            FROM cliente c
-            LEFT JOIN atendimento a ON c.id_cliente = a.id_cliente
-            GROUP BY c.id_cliente, c.nome, c.telefone
-            HAVING COUNT(DISTINCT CASE WHEN a.status = 'finalizado' THEN a.id_atendimento END) > 0
-            ORDER BY total_atendimentos DESC, valor_gasto DESC
-            LIMIT 20
-        """
+        # Pipeline de agregação
+        pipeline = [
+            {
+                "$match": {"status": "finalizado"}
+            },
+            {
+                "$group": {
+                    "_id": "$cliente_id",
+                    "nome": {"$first": "$cliente.nome"},
+                    "telefone": {"$first": "$cliente.telefone"},
+                    "total_atendimentos": {"$sum": 1},
+                    "valor_gasto": {"$sum": "$valor_total"},
+                    "ultima_visita": {"$max": "$data_atendimento"}
+                }
+            },
+            {
+                "$sort": {"total_atendimentos": -1, "valor_gasto": -1}
+            },
+            {
+                "$limit": 20
+            }
+        ]
         
-        resultados = self.db.executar_query(query)
+        resultados = self.db.agregacao("atendimentos", pipeline)
         
         if not resultados:
             print("Nenhum atendimento registrado ainda.")
             return
         
-        print(f"{'#':<4} {'Cliente':<30} {'Telefone':<15} {'Atend.':<8} {'Gasto Total':<15} {'Última Visita':<15}")
+        print(f"{'#':<4} {'Cliente':<30} {'Telefone':<15} {'Atend.':<8} {'Gasto Total':<15} {'Ultima Visita':<15}")
         print("-" * 87)
         
         ranking = 1
         
         for resultado in resultados:
-            nome, telefone, atendimentos, valor, ultima_visita, agend_futuro = resultado
+            nome = resultado['nome'][:28]
+            telefone = resultado['telefone'][:13]
+            atendimentos = resultado['total_atendimentos']
+            valor = resultado['valor_gasto']
+            ultima_visita = resultado.get('ultima_visita')
             
             valor_fmt = f"R$ {valor:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            
-            if ultima_visita:
-                ultima_fmt = datetime.strptime(str(ultima_visita), "%Y-%m-%d").strftime("%d/%m/%Y")
-            else:
-                ultima_fmt = "-"
+            ultima_fmt = ultima_visita.strftime("%d/%m/%Y") if ultima_visita else "-"
             
             print(f"{ranking:<4} {nome:<30} {telefone:<15} {atendimentos:<8} {valor_fmt:<15} {ultima_fmt:<15}")
             ranking += 1
@@ -226,74 +310,97 @@ class Relatorios:
     
     def relatorio_produtos_mais_vendidos(self):
         """Relatório 5: Produtos mais vendidos"""
-        print("\n=== RELATÓRIO: PRODUTOS MAIS VENDIDOS ===\n")
+        print("\n=== RELATORIO: PRODUTOS MAIS VENDIDOS ===\n")
         
-        query = """
-            SELECT 
-                p.nome,
-                p.estoque_atual,
-                p.estoque_minimo,
-                COALESCE(SUM(vp.quantidade), 0) as total_vendido,
-                COALESCE(SUM(vp.subtotal), 0) as faturamento,
-                p.preco_venda
-            FROM produto p
-            LEFT JOIN venda_produto vp ON p.id_produto = vp.id_produto
-            LEFT JOIN atendimento a ON vp.id_atendimento = a.id_atendimento
-                AND a.status = 'finalizado'
-            WHERE p.ativo = TRUE
-            GROUP BY p.id_produto, p.nome, p.estoque_atual, p.estoque_minimo, p.preco_venda
-            HAVING COALESCE(SUM(vp.quantidade), 0) > 0
-            ORDER BY total_vendido DESC
-        """
+        # Pipeline de agregação
+        pipeline = [
+            {
+                "$match": {"status": "finalizado"}
+            },
+            {
+                "$unwind": "$produtos_vendidos"
+            },
+            {
+                "$group": {
+                    "_id": "$produtos_vendidos.produto_id",
+                    "nome": {"$first": "$produtos_vendidos.nome"},
+                    "total_vendido": {"$sum": "$produtos_vendidos.quantidade"},
+                    "faturamento": {"$sum": "$produtos_vendidos.subtotal"}
+                }
+            },
+            {
+                "$sort": {"total_vendido": -1}
+            }
+        ]
         
-        resultados = self.db.executar_query(query)
+        vendas = self.db.agregacao("atendimentos", pipeline)
         
-        if not resultados:
+        if not vendas:
             print("Nenhuma venda de produto registrada ainda.")
             return
+        
+        # Buscar informações de estoque dos produtos
+        produtos_dict = {}
+        for venda in vendas:
+            produto_id = venda['_id']
+            produto_info = self.db.buscar_um("produtos", {"_id": produto_id})
+            if produto_info:
+                produtos_dict[str(produto_id)] = {
+                    "estoque_atual": produto_info.get('estoque_atual', 0),
+                    "estoque_minimo": produto_info.get('estoque_minimo', 5)
+                }
         
         print(f"{'Produto':<30} {'Vendidos':<10} {'Faturamento':<15} {'Estoque':<10} {'Status':<10}")
         print("-" * 75)
         
         faturamento_total = 0
         
-        for resultado in resultados:
-            nome, estoque, estoque_min, vendidos, faturamento, preco = resultado
+        for venda in vendas:
+            nome = venda['nome'][:28]
+            vendidos = venda['total_vendido']
+            faturamento = venda['faturamento']
+            
+            produto_id_str = str(venda['_id'])
+            info = produtos_dict.get(produto_id_str, {})
+            estoque = info.get('estoque_atual', 0)
+            estoque_min = info.get('estoque_minimo', 5)
             
             faturamento_fmt = f"R$ {faturamento:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
             
             # Verificar status do estoque
-            if estoque <= estoque_min:
+            if estoque <= 0:
+                status = "SEM"
+            elif estoque <= estoque_min:
                 status = "BAIXO"
             else:
                 status = "OK"
             
             print(f"{nome:<30} {vendidos:<10} {faturamento_fmt:<15} {estoque:<10} {status:<10}")
             
-            faturamento_total += float(faturamento)
+            faturamento_total += faturamento
         
         total_fmt = f"R$ {faturamento_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
         print("-" * 75)
         print(f"\nFaturamento total em produtos: {total_fmt}")
 
 
-def menu_relatorios(db: Database):
+def menu_relatorios(db: DatabaseMongo):
     """Menu de relatórios do sistema"""
     relatorios = Relatorios(db)
     
     while True:
         print("\n" + "="*60)
-        print("          RELATÓRIOS")
+        print("          RELATORIOS")
         print("="*60)
-        print("\n[1] Atendimentos por Período")
-        print("[2] Serviços Mais Solicitados")
+        print("\n[1] Atendimentos por Periodo")
+        print("[2] Servicos Mais Solicitados")
         print("[3] Faturamento por Barbeiro")
         print("[4] Clientes Mais Frequentes")
         print("[5] Produtos Mais Vendidos")
         print("[0] Voltar ao Menu Principal")
         print("-"*60)
         
-        opcao = input("\nEscolha uma opção: ").strip()
+        opcao = input("\nEscolha uma opcao: ").strip()
         
         if opcao == "1":
             relatorios.relatorio_atendimentos_periodo()
@@ -308,6 +415,6 @@ def menu_relatorios(db: Database):
         elif opcao == "0":
             break
         else:
-            print("\nOpção inválida!")
+            print("\nOpcao invalida!")
         
         input("\nPressione ENTER para continuar...")

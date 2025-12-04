@@ -1,231 +1,319 @@
-from database import Database
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sql'))
+from database_mongodb import DatabaseMongo
+from bson import ObjectId
 from datetime import datetime
 
-class CRUDCliente:
-    def __init__(self, db: Database):
+class CRUDClientes:
+    def __init__(self, db: DatabaseMongo):
         self.db = db
     
-    def criar_cliente(self):
-        """Cadastra um novo cliente"""
-        print("\n=== CADASTRAR NOVO CLIENTE ===\n")
+    def cadastrar(self):
+        """CREATE - Cadastra novo cliente"""
+        print("\n=== CADASTRAR CLIENTE ===\n")
         
-        try:
-            nome = input("Nome completo: ").strip()
-            if not nome:
-                print("Nome é obrigatório!")
-                return
-            
-            cpf = input("CPF (apenas números): ").strip()
-            if len(cpf) != 11 or not cpf.isdigit():
-                print("CPF inválido! Deve conter 11 dígitos.")
-                return
-            
-            telefone = input("Telefone: ").strip()
-            if not telefone:
-                print("Telefone é obrigatório!")
-                return
-            
-            email = input("Email (opcional): ").strip() or None
-            
-            data_nasc = input("Data de nascimento (DD/MM/AAAA) (opcional): ").strip()
-            if data_nasc:
-                try:
-                    data_nasc = datetime.strptime(data_nasc, "%d/%m/%Y").strftime("%Y-%m-%d")
-                except ValueError:
-                    print("Data inválida! Use o formato DD/MM/AAAA")
-                    return
-            else:
-                data_nasc = None
-            
-            observacoes = input("Observações (alergias, preferências) (opcional): ").strip() or None
-            
-            query = """
-                INSERT INTO cliente (nome, cpf, telefone, email, data_nascimento, observacoes)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """
-            params = (nome, cpf, telefone, email, data_nasc, observacoes)
-            
-            if self.db.executar_comando(query, params):
-                print(f"\n✓ Cliente '{nome}' cadastrado com sucesso!")
-            
-        except Exception as e:
-            print(f"Erro ao cadastrar cliente: {e}")
-    
-    def listar_clientes(self):
-        """Lista todos os clientes cadastrados"""
-        print("\n=== LISTA DE CLIENTES ===\n")
-        
-        query = "SELECT id_cliente, nome, cpf, telefone, email, data_cadastro FROM cliente ORDER BY nome"
-        clientes = self.db.executar_query(query)
-        
-        if not clientes:
-            print("Nenhum cliente cadastrado.")
+        nome = input("Nome completo: ").strip()
+        if not nome:
+            print("❌ Nome é obrigatório!")
             return
         
-        print(f"{'ID':<5} {'Nome':<30} {'CPF':<15} {'Telefone':<15} {'Email':<30}")
-        print("-" * 95)
+        cpf = input("CPF (apenas números): ").strip()
+        if not cpf or len(cpf) != 11:
+            print("❌ CPF inválido! Digite 11 dígitos.")
+            return
         
-        for cliente in clientes:
-            id_c, nome, cpf, telefone, email, data_cad = cliente
-            cpf_fmt = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
-            email_fmt = email if email else "-"
-            print(f"{id_c:<5} {nome:<30} {cpf_fmt:<15} {telefone:<15} {email_fmt:<30}")
+        # Verificar se CPF já existe
+        if self.db.buscar_um("clientes", {"cpf": cpf}):
+            print(f"\n❌ CPF {cpf} já está cadastrado!")
+            return
         
-        print(f"\nTotal: {len(clientes)} cliente(s)")
+        telefone = input("Telefone: ").strip()
+        if not telefone:
+            print("❌ Telefone é obrigatório!")
+            return
+        
+        email = input("Email (opcional): ").strip() or None
+        
+        data_nasc_str = input("Data de Nascimento DD/MM/AAAA (opcional): ").strip()
+        data_nasc = None
+        if data_nasc_str:
+            try:
+                data_nasc = datetime.strptime(data_nasc_str, "%d/%m/%Y")
+            except ValueError:
+                print("⚠️  Data inválida, continuando sem data de nascimento.")
+                data_nasc = None
+        
+        observacoes = input("Observações (opcional): ").strip() or None
+        
+        # Criar documento
+        cliente = {
+            "nome": nome,
+            "cpf": cpf,
+            "telefone": telefone,
+            "email": email,
+            "data_nascimento": data_nasc,
+            "data_cadastro": datetime.now(),
+            "observacoes": observacoes,
+            "stats": {
+                "total_atendimentos": 0,
+                "valor_total_gasto": 0.0,
+                "ultima_visita": None
+            }
+        }
+        
+        cliente_id = self.db.inserir("clientes", cliente)
+        
+        if cliente_id:
+            print(f"\n✅ Cliente cadastrado com sucesso!")
+            print(f"   ID: {cliente_id}")
+            print(f"   Nome: {nome}")
+        else:
+            print("\n❌ Erro ao cadastrar cliente!")
     
-    def buscar_cliente(self):
-        """Busca um cliente por ID ou CPF"""
-        print("\n=== BUSCAR CLIENTE ===\n")
-        print("[1] Buscar por ID")
-        print("[2] Buscar por CPF")
-        print("[3] Buscar por Nome")
+    def consultar(self):
+        """READ - Consulta clientes"""
+        print("\n=== CONSULTAR CLIENTES ===\n")
+        print("[1] Listar todos")
+        print("[2] Buscar por nome")
+        print("[3] Buscar por CPF")
+        print("[0] Voltar")
         
         opcao = input("\nEscolha: ").strip()
         
         if opcao == "1":
-            id_cliente = input("Digite o ID: ").strip()
-            if not id_cliente.isdigit():
-                print("ID inválido!")
-                return
-            query = "SELECT * FROM cliente WHERE id_cliente = %s"
-            params = (id_cliente,)
-        
+            self._listar_todos()
         elif opcao == "2":
-            cpf = input("Digite o CPF (apenas números): ").strip()
-            query = "SELECT * FROM cliente WHERE cpf = %s"
-            params = (cpf,)
-        
+            self._buscar_por_nome()
         elif opcao == "3":
-            nome = input("Digite o nome (ou parte dele): ").strip()
-            query = "SELECT * FROM cliente WHERE nome ILIKE %s"
-            params = (f"%{nome}%",)
-        
-        else:
-            print("Opção inválida!")
+            self._buscar_por_cpf()
+        elif opcao == "0":
             return
+        else:
+            print("\n❌ Opção inválida!")
+    
+    def _listar_todos(self):
+        """Lista todos os clientes"""
+        from pymongo import ASCENDING
         
-        clientes = self.db.executar_query(query, params)
+        clientes = self.db.buscar_todos(
+            "clientes",
+            ordenacao=[("nome", ASCENDING)],
+            limite=50
+        )
         
         if not clientes:
-            print("\nCliente não encontrado.")
+            print("\n⚠️  Nenhum cliente cadastrado.")
             return
         
-        print("\n" + "="*80)
-        for cliente in clientes:
-            id_c, nome, cpf, telefone, email, data_nasc, data_cad, obs = cliente
-            cpf_fmt = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
+        print(f"\n{'Nome':<30} {'CPF':<15} {'Telefone':<15} {'Atend.':<8}")
+        print("-" * 68)
+        
+        for c in clientes:
+            nome = c['nome'][:28]
+            cpf = c['cpf']
+            telefone = c['telefone']
+            atend = c['stats']['total_atendimentos']
             
-            print(f"ID: {id_c}")
-            print(f"Nome: {nome}")
-            print(f"CPF: {cpf_fmt}")
-            print(f"Telefone: {telefone}")
-            print(f"Email: {email if email else '-'}")
-            print(f"Data Nascimento: {data_nasc if data_nasc else '-'}")
-            print(f"Data Cadastro: {data_cad}")
-            print(f"Observações: {obs if obs else '-'}")
-            print("="*80)
+            print(f"{nome:<30} {cpf:<15} {telefone:<15} {atend:<8}")
+        
+        print(f"\nTotal: {len(clientes)} cliente(s)")
+        
+        if len(clientes) == 50:
+            print("⚠️  Mostrando apenas os primeiros 50 clientes")
     
-    def atualizar_cliente(self):
-        """Atualiza dados de um cliente"""
+    def _buscar_por_nome(self):
+        """Busca clientes por nome"""
+        nome = input("\nNome (pode ser parcial): ").strip()
+        
+        if not nome:
+            print("❌ Digite um nome para buscar!")
+            return
+        
+        from pymongo import ASCENDING
+        
+        clientes = self.db.buscar_todos(
+            "clientes",
+            {"nome": {"$regex": nome, "$options": "i"}},  # Case insensitive
+            ordenacao=[("nome", ASCENDING)]
+        )
+        
+        if not clientes:
+            print(f"\n⚠️  Nenhum cliente encontrado com '{nome}'")
+            return
+        
+        print(f"\n✅ Encontrado(s) {len(clientes)} cliente(s):\n")
+        
+        for c in clientes:
+            self._exibir_cliente_detalhado(c)
+    
+    def _buscar_por_cpf(self):
+        """Busca cliente por CPF"""
+        cpf = input("\nCPF (apenas números): ").strip()
+        
+        if not cpf:
+            print("❌ Digite um CPF!")
+            return
+        
+        cliente = self.db.buscar_um("clientes", {"cpf": cpf})
+        
+        if cliente:
+            self._exibir_cliente_detalhado(cliente)
+        else:
+            print(f"\n⚠️  Cliente com CPF {cpf} não encontrado.")
+    
+    def _exibir_cliente_detalhado(self, cliente):
+        """Exibe dados completos do cliente"""
+        print("\n" + "="*50)
+        print(f"ID: {cliente['_id']}")
+        print(f"Nome: {cliente['nome']}")
+        print(f"CPF: {cliente['cpf']}")
+        print(f"Telefone: {cliente['telefone']}")
+        print(f"Email: {cliente.get('email', '-')}")
+        
+        if cliente.get('data_nascimento'):
+            print(f"Data Nascimento: {cliente['data_nascimento'].strftime('%d/%m/%Y')}")
+        
+        print(f"Cadastrado em: {cliente['data_cadastro'].strftime('%d/%m/%Y')}")
+        
+        stats = cliente.get('stats', {})
+        print(f"\n📊 Estatísticas:")
+        print(f"   Total de atendimentos: {stats.get('total_atendimentos', 0)}")
+        
+        valor_gasto = stats.get('valor_total_gasto', 0.0)
+        valor_fmt = f"R$ {valor_gasto:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+        print(f"   Valor total gasto: {valor_fmt}")
+        
+        if stats.get('ultima_visita'):
+            print(f"   Última visita: {stats['ultima_visita'].strftime('%d/%m/%Y')}")
+        
+        if cliente.get('observacoes'):
+            print(f"\nObservações: {cliente['observacoes']}")
+        print("="*50)
+    
+    def atualizar(self):
+        """UPDATE - Atualiza dados do cliente"""
         print("\n=== ATUALIZAR CLIENTE ===\n")
         
-        id_cliente = input("Digite o ID do cliente: ").strip()
-        if not id_cliente.isdigit():
-            print("ID inválido!")
+        cpf = input("CPF do cliente: ").strip()
+        
+        if not cpf:
+            print("❌ CPF é obrigatório!")
             return
         
-        query = "SELECT * FROM cliente WHERE id_cliente = %s"
-        cliente = self.db.executar_query(query, (id_cliente,))
+        cliente = self.db.buscar_um("clientes", {"cpf": cpf})
         
         if not cliente:
-            print("Cliente não encontrado!")
+            print(f"\n⚠️  Cliente com CPF {cpf} não encontrado!")
             return
         
-        cliente = cliente[0]
-        id_c, nome_atual, cpf_atual, tel_atual, email_atual, nasc_atual, cad_atual, obs_atual = cliente
+        print(f"\nCliente encontrado: {cliente['nome']}")
+        print("\n💡 Deixe em branco para manter o valor atual\n")
         
-        print(f"\nCliente: {nome_atual}")
-        print("\nDeixe em branco para manter o valor atual.\n")
+        nome = input(f"Nome [{cliente['nome']}]: ").strip()
+        telefone = input(f"Telefone [{cliente['telefone']}]: ").strip()
+        email = input(f"Email [{cliente.get('email', '-')}]: ").strip()
+        observacoes = input(f"Observações [{cliente.get('observacoes', '-')}]: ").strip()
         
-        nome = input(f"Nome [{nome_atual}]: ").strip() or nome_atual
-        telefone = input(f"Telefone [{tel_atual}]: ").strip() or tel_atual
-        email = input(f"Email [{email_atual if email_atual else '-'}]: ").strip()
-        email = email if email else email_atual
+        # Montar atualização
+        atualizacao = {}
         
-        observacoes = input(f"Observações [{obs_atual if obs_atual else '-'}]: ").strip()
-        observacoes = observacoes if observacoes else obs_atual
+        if nome:
+            atualizacao['nome'] = nome
+        if telefone:
+            atualizacao['telefone'] = telefone
+        if email:
+            atualizacao['email'] = email
+        if observacoes:
+            atualizacao['observacoes'] = observacoes
         
-        query = """
-            UPDATE cliente 
-            SET nome = %s, telefone = %s, email = %s, observacoes = %s
-            WHERE id_cliente = %s
-        """
-        params = (nome, telefone, email, observacoes, id_cliente)
+        if not atualizacao:
+            print("\n⚠️  Nenhuma alteração informada.")
+            return
         
-        if self.db.executar_comando(query, params):
-            print(f"\n✓ Cliente atualizado com sucesso!")
+        # Confirmar
+        print("\n📝 Dados que serão atualizados:")
+        for campo, valor in atualizacao.items():
+            print(f"   • {campo}: {valor}")
+        
+        confirma = input("\nConfirmar atualização? (S/N): ").strip().upper()
+        
+        if confirma != 'S':
+            print("❌ Atualização cancelada.")
+            return
+        
+        if self.db.atualizar("clientes", {"_id": cliente['_id']}, atualizacao):
+            print("\n✅ Cliente atualizado com sucesso!")
+        else:
+            print("\n❌ Erro ao atualizar cliente!")
     
-    def deletar_cliente(self):
-        """Remove um cliente do sistema"""
-        print("\n=== REMOVER CLIENTE ===\n")
+    def deletar(self):
+        """DELETE - Remove cliente"""
+        print("\n=== DELETAR CLIENTE ===\n")
         
-        id_cliente = input("Digite o ID do cliente: ").strip()
-        if not id_cliente.isdigit():
-            print("ID inválido!")
+        cpf = input("CPF do cliente: ").strip()
+        
+        if not cpf:
+            print("❌ CPF é obrigatório!")
             return
         
-        query = "SELECT nome FROM cliente WHERE id_cliente = %s"
-        cliente = self.db.executar_query(query, (id_cliente,))
+        cliente = self.db.buscar_um("clientes", {"cpf": cpf})
         
         if not cliente:
-            print("Cliente não encontrado!")
+            print(f"\n⚠️  Cliente com CPF {cpf} não encontrado!")
             return
         
-        nome = cliente[0][0]
+        print(f"\nCliente encontrado: {cliente['nome']}")
         
-        confirmacao = input(f"\nTem certeza que deseja remover o cliente '{nome}'? (S/N): ").strip().upper()
+        # Verificar se tem atendimentos
+        atendimento = self.db.buscar_um("atendimentos", {"cliente_id": cliente['_id']})
         
-        if confirmacao != 'S':
-            print("Operação cancelada.")
+        if atendimento:
+            print("\n❌ NÃO É POSSÍVEL DELETAR!")
+            print("   Este cliente possui atendimentos registrados.")
+            print("   Por questões de integridade, não pode ser removido.")
             return
         
-        query = "DELETE FROM cliente WHERE id_cliente = %s"
+        print("\n⚠️  ATENÇÃO: Esta ação não pode ser desfeita!")
+        confirma = input(f"Deseja realmente deletar '{cliente['nome']}'? Digite 'SIM' para confirmar: ").strip().upper()
         
-        if self.db.executar_comando(query, (id_cliente,)):
-            print(f"\n✓ Cliente '{nome}' removido com sucesso!")
+        if confirma == "SIM":
+            if self.db.deletar("clientes", {"_id": cliente['_id']}):
+                print("\n✅ Cliente deletado com sucesso!")
+            else:
+                print("\n❌ Erro ao deletar cliente!")
+        else:
+            print("\n❌ Operação cancelada.")
 
 
-def menu_clientes(db: Database):
-    """Menu de gerenciamento de clientes"""
-    crud = CRUDCliente(db)
+def menu_clientes(db: DatabaseMongo):
+    """Menu CRUD de clientes"""
+    crud = CRUDClientes(db)
     
     while True:
-        print("\n" + "="*50)
-        print("           GERENCIAR CLIENTES")
-        print("="*50)
-        print("[1] Cadastrar Cliente")
-        print("[2] Listar Todos os Clientes")
-        print("[3] Buscar Cliente")
-        print("[4] Atualizar Cliente")
-        print("[5] Remover Cliente")
+        print("\n" + "="*60)
+        print("          GERENCIAR CLIENTES")
+        print("="*60)
+        print("\n[1] Cadastrar Cliente")
+        print("[2] Consultar Clientes")
+        print("[3] Atualizar Cliente")
+        print("[4] Deletar Cliente")
         print("[0] Voltar ao Menu Principal")
-        print("-"*50)
+        print("-"*60)
         
         opcao = input("\nEscolha uma opção: ").strip()
         
         if opcao == "1":
-            crud.criar_cliente()
+            crud.cadastrar()
         elif opcao == "2":
-            crud.listar_clientes()
+            crud.consultar()
         elif opcao == "3":
-            crud.buscar_cliente()
+            crud.atualizar()
         elif opcao == "4":
-            crud.atualizar_cliente()
-        elif opcao == "5":
-            crud.deletar_cliente()
+            crud.deletar()
         elif opcao == "0":
             break
         else:
-            print("\nOpção inválida!")
+            print("\n❌ Opção inválida!")
         
         input("\nPressione ENTER para continuar...")

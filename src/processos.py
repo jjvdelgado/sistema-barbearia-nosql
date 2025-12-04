@@ -1,8 +1,12 @@
-from database import Database
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sql'))
+from database_mongodb import DatabaseMongo
+from bson import ObjectId
 from datetime import datetime, timedelta
 
 class ProcessosNegocio:
-    def __init__(self, db: Database):
+    def __init__(self, db: DatabaseMongo):
         self.db = db
     
     def novo_atendimento(self):
@@ -18,194 +22,292 @@ class ProcessosNegocio:
         elif tipo_opcao == "2":
             self._criar_atendimento_walkin()
         else:
-            print("Opção inválida!")
+            print("❌ Opção inválida!")
     
     def _criar_atendimento_agendado(self):
         """Cria atendimento para data futura"""
-        print("\nAGENDAR ATENDIMENTO\n")
+        print("\n📅 AGENDAR ATENDIMENTO\n")
         
         # Selecionar cliente
-        id_cliente = self._selecionar_cliente()
-        if not id_cliente:
+        cliente = self._selecionar_cliente()
+        if not cliente:
             return
         
         # Selecionar barbeiro
-        id_barbeiro = self._selecionar_barbeiro()
-        if not id_barbeiro:
+        barbeiro = self._selecionar_barbeiro()
+        if not barbeiro:
             return
         
         # Data e horário
         data_agendada = input("\nData do atendimento (DD/MM/AAAA): ").strip()
         try:
-            data_agendada = datetime.strptime(data_agendada, "%d/%m/%Y").strftime("%Y-%m-%d")
+            data_agendada = datetime.strptime(data_agendada, "%d/%m/%Y")
         except ValueError:
-            print("Data inválida!")
+            print("❌ Data inválida!")
             return
         
         horario = input("Horário (HH:MM): ").strip()
         try:
             datetime.strptime(horario, "%H:%M")
         except ValueError:
-            print("Horário inválido!")
+            print("❌ Horário inválido!")
             return
         
-        observacoes = input("Observações (opcional): ").strip()
-        if not observacoes:
-            observacoes = None
+        observacoes = input("Observações (opcional): ").strip() or None
         
-        # Inserir atendimento
-        query = """
-            INSERT INTO atendimento (id_cliente, id_barbeiro, tipo, data_agendada, horario_agendado, status, data_atendimento, observacoes)
-            VALUES (%s, %s, 'agendado', %s, %s, 'agendado', NULL, %s)
-        """
-        params = (id_cliente, id_barbeiro, data_agendada, horario, observacoes)
+        # Criar documento de atendimento
+        atendimento = {
+            "cliente_id": cliente['_id'],
+            "barbeiro_id": barbeiro['_id'],
+            "cliente": {
+                "nome": cliente['nome'],
+                "telefone": cliente['telefone']
+            },
+            "barbeiro": {
+                "nome": barbeiro['nome'],
+                "comissao_percentual": barbeiro.get('comissao_percentual', 30.0)
+            },
+            "tipo": "agendado",
+            "status": "agendado",
+            "data_agendada": data_agendada,
+            "horario_agendado": horario,
+            "data_atendimento": None,
+            "horario_inicio": None,
+            "horario_fim": None,
+            "servicos": [],
+            "produtos_vendidos": [],
+            "valor_servicos": 0.0,
+            "valor_produtos": 0.0,
+            "valor_total": 0.0,
+            "comissao_barbeiro": 0.0,
+            "forma_pagamento": None,
+            "observacoes": observacoes,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now()
+        }
         
-        if self.db.executar_comando(query, params):
-            data_fmt = datetime.strptime(data_agendada, '%Y-%m-%d').strftime('%d/%m/%Y')
-            print(f"\nAtendimento agendado com sucesso!")
-            print(f"  Data: {data_fmt} às {horario}")
+        atendimento_id = self.db.inserir("atendimentos", atendimento)
+        
+        if atendimento_id:
+            data_fmt = data_agendada.strftime('%d/%m/%Y')
+            print(f"\n✅ Atendimento agendado com sucesso!")
+            print(f"   ID: {atendimento_id}")
+            print(f"   Data: {data_fmt} às {horario}")
+            print(f"   Cliente: {cliente['nome']}")
+            print(f"   Barbeiro: {barbeiro['nome']}")
+        else:
+            print("\n❌ Erro ao agendar atendimento!")
     
     def _criar_atendimento_walkin(self):
         """Cria atendimento walk-in (atender agora)"""
-        print("\nATENDIMENTO WALK-IN\n")
+        print("\n🚶 ATENDIMENTO WALK-IN\n")
         
         # Selecionar cliente
-        id_cliente = self._selecionar_cliente()
-        if not id_cliente:
+        cliente = self._selecionar_cliente()
+        if not cliente:
             return
         
         # Selecionar barbeiro
-        id_barbeiro = self._selecionar_barbeiro()
-        if not id_barbeiro:
+        barbeiro = self._selecionar_barbeiro()
+        if not barbeiro:
             return
         
         horario_inicio = datetime.now().strftime("%H:%M")
-        observacoes = input("\nObservações (opcional): ").strip()
-        if not observacoes:
-            observacoes = None
+        observacoes = input("\nObservações (opcional): ").strip() or None
         
-        # Inserir atendimento
-        query = """
-            INSERT INTO atendimento (id_cliente, id_barbeiro, tipo, horario_inicio, status, observacoes)
-            VALUES (%s, %s, 'walkin', %s, 'em_andamento', %s)
-            RETURNING id_atendimento
-        """
-        params = (id_cliente, id_barbeiro, horario_inicio, observacoes)
+        # Criar documento de atendimento
+        atendimento = {
+            "cliente_id": cliente['_id'],
+            "barbeiro_id": barbeiro['_id'],
+            "cliente": {
+                "nome": cliente['nome'],
+                "telefone": cliente['telefone']
+            },
+            "barbeiro": {
+                "nome": barbeiro['nome'],
+                "comissao_percentual": barbeiro.get('comissao_percentual', 30.0)
+            },
+            "tipo": "walkin",
+            "status": "em_andamento",
+            "data_agendada": None,
+            "horario_agendado": None,
+            "data_atendimento": datetime.now(),
+            "horario_inicio": horario_inicio,
+            "horario_fim": None,
+            "servicos": [],
+            "produtos_vendidos": [],
+            "valor_servicos": 0.0,
+            "valor_produtos": 0.0,
+            "valor_total": 0.0,
+            "comissao_barbeiro": 0.0,
+            "forma_pagamento": None,
+            "observacoes": observacoes,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now()
+        }
         
-        try:
-            self.db.cursor.execute(query, params)
-            id_atendimento = self.db.cursor.fetchone()[0]
-            self.db.conn.commit()
-            
-            print(f"\nAtendimento #{id_atendimento} iniciado às {horario_inicio}!")
-            print("  Não esqueça de adicionar os serviços e finalizar o atendimento.")
-        except Exception as e:
-            print(f"Erro ao criar atendimento: {e}")
-            self.db.conn.rollback()
+        atendimento_id = self.db.inserir("atendimentos", atendimento)
+        
+        if atendimento_id:
+            print(f"\n✅ Atendimento iniciado com sucesso!")
+            print(f"   ID: {atendimento_id}")
+            print(f"   Horário: {horario_inicio}")
+            print(f"   Cliente: {cliente['nome']}")
+            print(f"   Barbeiro: {barbeiro['nome']}")
+            print("\n💡 Não esqueça de adicionar os serviços e finalizar o atendimento.")
+        else:
+            print("\n❌ Erro ao criar atendimento!")
     
     def _selecionar_cliente(self):
         """Helper: Seleciona um cliente"""
-        clientes = self.db.executar_query(
-            "SELECT id_cliente, nome, telefone FROM cliente ORDER BY nome LIMIT 15"
+        from pymongo import ASCENDING
+        
+        clientes = self.db.buscar_todos(
+            "clientes",
+            ordenacao=[("nome", ASCENDING)],
+            limite=15
         )
         
         if not clientes:
-            print("Nenhum cliente cadastrado!")
+            print("❌ Nenhum cliente cadastrado!")
             return None
         
-        print("Clientes:")
+        print("👥 Clientes:")
         for cliente in clientes:
-            print(f"  [{cliente[0]}] {cliente[1]} - {cliente[2]}")
+            print(f"  • {cliente['nome']} - {cliente['telefone']}")
         
         if len(clientes) == 15:
             print("  ... (mostrando apenas os primeiros 15)")
         
-        id_cliente = input("\nID do Cliente: ").strip()
+        nome_busca = input("\nNome do cliente (pode ser parcial): ").strip()
         
-        if not id_cliente.isdigit():
-            print("ID inválido!")
+        if not nome_busca:
+            print("❌ Nome é obrigatório!")
             return None
         
-        # Verificar se existe
-        verifica = self.db.executar_query(
-            "SELECT nome FROM cliente WHERE id_cliente = %s", 
-            (id_cliente,)
-        )
+        # Buscar cliente
+        cliente = self.db.buscar_um("clientes", {"nome": {"$regex": f"^{nome_busca}", "$options": "i"}})
         
-        if not verifica:
-            print("Cliente não encontrado!")
-            return None
+        if not cliente:
+            # Tentar busca parcial
+            clientes_encontrados = self.db.buscar_todos(
+                "clientes",
+                {"nome": {"$regex": nome_busca, "$options": "i"}},
+                ordenacao=[("nome", ASCENDING)],
+                limite=5
+            )
+            
+            if not clientes_encontrados:
+                print(f"❌ Cliente '{nome_busca}' não encontrado!")
+                return None
+            
+            if len(clientes_encontrados) > 1:
+                print(f"\n✅ Encontrados {len(clientes_encontrados)} clientes:\n")
+                for i, c in enumerate(clientes_encontrados, 1):
+                    print(f"[{i}] {c['nome']} - {c['telefone']}")
+                
+                escolha = input("\nEscolha o número: ").strip()
+                try:
+                    idx = int(escolha) - 1
+                    if idx < 0 or idx >= len(clientes_encontrados):
+                        print("❌ Opção inválida!")
+                        return None
+                    cliente = clientes_encontrados[idx]
+                except ValueError:
+                    print("❌ Opção inválida!")
+                    return None
+            else:
+                cliente = clientes_encontrados[0]
         
-        print(f"Cliente: {verifica[0][0]}")
-        return id_cliente
+        print(f"✅ Cliente selecionado: {cliente['nome']}")
+        return cliente
     
     def _selecionar_barbeiro(self):
         """Helper: Seleciona um barbeiro"""
-        barbeiros = self.db.executar_query(
-            "SELECT id_barbeiro, nome, especialidade FROM barbeiro WHERE ativo = TRUE ORDER BY nome"
+        from pymongo import ASCENDING
+        
+        barbeiros = self.db.buscar_todos(
+            "barbeiros",
+            {"ativo": True},
+            ordenacao=[("nome", ASCENDING)]
         )
         
         if not barbeiros:
-            print("Nenhum barbeiro ativo!")
+            print("❌ Nenhum barbeiro ativo!")
             return None
         
-        print("\nBarbeiros:")
+        print("\n💈 Barbeiros disponíveis:")
         for barbeiro in barbeiros:
-            espec = barbeiro[2] if barbeiro[2] else "Geral"
-            print(f"  [{barbeiro[0]}] {barbeiro[1]} - {espec}")
+            espec = barbeiro.get('especialidade', 'Geral')
+            print(f"  • {barbeiro['nome']} - {espec}")
         
-        id_barbeiro = input("\nID do Barbeiro: ").strip()
+        nome_busca = input("\nNome do barbeiro: ").strip()
         
-        if not id_barbeiro.isdigit():
-            print("ID inválido!")
+        if not nome_busca:
+            print("❌ Nome é obrigatório!")
             return None
         
-        # Verificar se existe
-        verifica = self.db.executar_query(
-            "SELECT nome FROM barbeiro WHERE id_barbeiro = %s AND ativo = TRUE",
-            (id_barbeiro,)
-        )
+        # Buscar barbeiro
+        barbeiro = self.db.buscar_um("barbeiros", {
+            "nome": {"$regex": f"^{nome_busca}", "$options": "i"},
+            "ativo": True
+        })
         
-        if not verifica:
-            print("Barbeiro não encontrado ou inativo!")
+        if not barbeiro:
+            print(f"❌ Barbeiro '{nome_busca}' não encontrado ou inativo!")
             return None
         
-        print(f"Barbeiro: {verifica[0][0]}")
-        return id_barbeiro
+        print(f"✅ Barbeiro selecionado: {barbeiro['nome']}")
+        return barbeiro
     
     def listar_atendimentos_dia(self):
         """Lista atendimentos do dia (agendados e em andamento)"""
         print("\n=== ATENDIMENTOS DE HOJE ===\n")
         
-        query = """
-            SELECT 
-                a.id_atendimento,
-                c.nome as cliente,
-                b.nome as barbeiro,
-                COALESCE(a.horario_agendado, a.horario_inicio) as horario,
-                a.tipo,
-                a.status
-            FROM atendimento a
-            JOIN cliente c ON a.id_cliente = c.id_cliente
-            JOIN barbeiro b ON a.id_barbeiro = b.id_barbeiro
-            WHERE (a.data_agendada = CURRENT_DATE OR a.data_atendimento = CURRENT_DATE)
-                AND a.status != 'cancelado'
-            ORDER BY horario
-        """
+        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        amanha = hoje + timedelta(days=1)
         
-        atendimentos = self.db.executar_query(query)
+        # Buscar atendimentos de hoje
+        filtro = {
+            "$or": [
+                {
+                    "data_agendada": {
+                        "$gte": hoje,
+                        "$lt": amanha
+                    }
+                },
+                {
+                    "data_atendimento": {
+                        "$gte": hoje,
+                        "$lt": amanha
+                    }
+                }
+            ],
+            "status": {"$ne": "cancelado"}
+        }
+        
+        atendimentos = self.db.buscar_todos(
+            "atendimentos",
+            filtro,
+            ordenacao=[("horario_agendado", 1), ("horario_inicio", 1)]
+        )
         
         if not atendimentos:
-            print("Nenhum atendimento para hoje.")
+            print("⚠️  Nenhum atendimento para hoje.")
             return
         
-        print(f"{'ID':<5} {'Horário':<10} {'Cliente':<25} {'Barbeiro':<20} {'Tipo':<12} {'Status':<15}")
-        print("-" * 87)
+        print(f"{'ID':<26} {'Horário':<10} {'Cliente':<25} {'Barbeiro':<20} {'Tipo':<12} {'Status':<15}")
+        print("-" * 108)
         
         for atend in atendimentos:
-            id_a, cliente, barbeiro, horario, tipo, status = atend
-            horario_str = str(horario)[:5] if horario else "-"
-            print(f"{id_a:<5} {horario_str:<10} {cliente:<25} {barbeiro:<20} {tipo:<12} {status:<15}")
+            id_str = str(atend['_id'])[:24]
+            horario = atend.get('horario_agendado') or atend.get('horario_inicio') or '-'
+            cliente = atend['cliente']['nome'][:23]
+            barbeiro = atend['barbeiro']['nome'][:18]
+            tipo = atend['tipo']
+            status = atend['status']
+            
+            print(f"{id_str:<26} {horario:<10} {cliente:<25} {barbeiro:<20} {tipo:<12} {status:<15}")
         
         print(f"\nTotal: {len(atendimentos)} atendimento(s)")
     
@@ -213,178 +315,269 @@ class ProcessosNegocio:
         """Adiciona serviços a um atendimento"""
         print("\n=== ADICIONAR SERVIÇOS AO ATENDIMENTO ===\n")
         
-        id_atendimento = input("ID do atendimento: ").strip()
-        if not id_atendimento.isdigit():
-            print("ID inválido!")
-            return
-        
-        # Verificar se atendimento existe
-        atend = self.db.executar_query(
-            "SELECT status FROM atendimento WHERE id_atendimento = %s",
-            (id_atendimento,)
+        # Listar atendimentos recentes em andamento
+        atendimentos = self.db.buscar_todos(
+            "atendimentos",
+            {"status": {"$in": ["agendado", "em_andamento"]}},
+            ordenacao=[("created_at", -1)],
+            limite=20
         )
         
-        if not atend:
-            print("Atendimento não encontrado!")
+        if not atendimentos:
+            print("Nenhum atendimento em andamento.")
             return
         
-        if atend[0][0] == 'finalizado':
-            print("Atendimento já foi finalizado!")
+        print("Atendimentos disponiveis:\n")
+        for atend in atendimentos:
+            cliente = atend['cliente']['nome']
+            barbeiro = atend['barbeiro']['nome']
+            status = atend['status']
+            horario = atend.get('horario_inicio', atend.get('horario_agendado', '-'))
+            print(f"  - {cliente} com {barbeiro} - {horario} ({status})")
+        
+        # BUSCAR POR NOME DO CLIENTE
+        nome_cliente = input("\nNome do cliente (pode ser parcial): ").strip()
+        
+        if not nome_cliente:
+            print("Nome e obrigatorio!")
             return
         
-        if atend[0][0] == 'cancelado':
+        # Filtrar atendimentos por nome do cliente
+        atendimentos_filtrados = [
+            atend for atend in atendimentos 
+            if nome_cliente.lower() in atend['cliente']['nome'].lower()
+        ]
+        
+        if not atendimentos_filtrados:
+            print(f"\nNenhum atendimento encontrado para cliente '{nome_cliente}'")
+            return
+        
+        # Se encontrou múltiplos, listar para escolher
+        if len(atendimentos_filtrados) > 1:
+            print(f"\nEncontrados {len(atendimentos_filtrados)} atendimentos:\n")
+            for i, atend in enumerate(atendimentos_filtrados, 1):
+                cliente = atend['cliente']['nome']
+                barbeiro = atend['barbeiro']['nome']
+                horario = atend.get('horario_inicio', atend.get('horario_agendado', '-'))
+                status = atend['status']
+                print(f"[{i}] {cliente} com {barbeiro} - {horario} ({status})")
+            
+            escolha = input("\nEscolha o numero: ").strip()
+            try:
+                idx = int(escolha) - 1
+                if idx < 0 or idx >= len(atendimentos_filtrados):
+                    print("Opcao invalida!")
+                    return
+                atendimento = atendimentos_filtrados[idx]
+            except ValueError:
+                print("Opcao invalida!")
+                return
+        else:
+            atendimento = atendimentos_filtrados[0]
+            print(f"\nAtendimento selecionado: {atendimento['cliente']['nome']} com {atendimento['barbeiro']['nome']}")
+        
+        # Verificar status
+        if atendimento['status'] == 'finalizado':
+            print("Atendimento ja foi finalizado!")
+            return
+        
+        if atendimento['status'] == 'cancelado':
             print("Atendimento foi cancelado!")
             return
         
-        # Listar serviços
-        servicos = self.db.executar_query(
-            "SELECT id_servico, nome, preco, duracao_estimada FROM servico WHERE ativo = TRUE ORDER BY nome"
+        # Listar serviços disponíveis
+        from pymongo import ASCENDING
+        
+        servicos = self.db.buscar_todos(
+            "servicos",
+            {"ativo": True},
+            ordenacao=[("nome", ASCENDING)]
         )
         
         if not servicos:
-            print("Nenhum serviço disponível!")
+            print("Nenhum servico disponivel!")
             return
         
-        print("\n💼 Serviços disponíveis:")
-        for servico in servicos:
-            preco_fmt = f"R$ {servico[2]:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            print(f"  [{servico[0]}] {servico[1]} - {preco_fmt} ({servico[3]} min)")
+        print("\nServicos disponiveis:")
+        for i, servico in enumerate(servicos, 1):
+            preco = servico['preco']
+            preco_fmt = f"R$ {preco:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+            duracao = servico['duracao_estimada']
+            print(f"  [{i}] {servico['nome']} - {preco_fmt} ({duracao} min)")
         
-        print("\nDigite os IDs dos serviços separados por vírgula")
+        print("\nDigite os numeros dos servicos separados por virgula")
         print("Exemplo: 1,3,5")
         
-        ids_servicos = input("\nServiços: ").strip().split(',')
+        indices = input("\nServicos: ").strip().split(',')
         
-        valor_total = 0
-        servicos_adicionados = []
+        servicos_para_adicionar = []
+        valor_total = 0.0
         
-        for id_s in ids_servicos:
-            id_s = id_s.strip()
-            if not id_s.isdigit():
+        for idx_str in indices:
+            idx_str = idx_str.strip()
+            if not idx_str.isdigit():
                 continue
             
-            # Buscar preço do serviço
-            servico_info = self.db.executar_query(
-                "SELECT nome, preco FROM servico WHERE id_servico = %s AND ativo = TRUE",
-                (id_s,)
-            )
-            
-            if not servico_info:
-                print(f"Serviço {id_s} não encontrado, pulando...")
+            idx = int(idx_str) - 1
+            if idx < 0 or idx >= len(servicos):
                 continue
             
-            nome_servico, preco = servico_info[0]
+            servico = servicos[idx]
             
             # Verificar se já não foi adicionado
-            verifica = self.db.executar_query(
-                "SELECT 1 FROM atendimento_servico WHERE id_atendimento = %s AND id_servico = %s",
-                (id_atendimento, id_s)
-            )
+            ja_adicionado = False
+            for s in atendimento.get('servicos', []):
+                if s.get('servico_id') == servico['_id']:
+                    print(f"Servico '{servico['nome']}' ja foi adicionado, pulando...")
+                    ja_adicionado = True
+                    break
             
-            if verifica:
-                print(f"Serviço '{nome_servico}' já foi adicionado, pulando...")
+            if ja_adicionado:
                 continue
             
-            # Inserir na tabela associativa
-            query = """
-                INSERT INTO atendimento_servico (id_atendimento, id_servico, preco_cobrado)
-                VALUES (%s, %s, %s)
-            """
-            try:
-                self.db.cursor.execute(query, (id_atendimento, id_s, preco))
-                valor_total += float(preco)
-                servicos_adicionados.append(nome_servico)
-            except Exception as e:
-                print(f"Erro ao adicionar serviço: {e}")
-        
-        if servicos_adicionados:
-            self.db.conn.commit()
-            print(f"\nServiços adicionados:")
-            for s in servicos_adicionados:
-                print(f"  • {s}")
+            servicos_para_adicionar.append({
+                "servico_id": servico['_id'],
+                "nome": servico['nome'],
+                "preco_cobrado": servico['preco']
+            })
             
-            valor_fmt = f"R$ {valor_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            print(f"\nValor total dos serviços: {valor_fmt}")
+            valor_total += servico['preco']
+        
+        if servicos_para_adicionar:
+            # Atualizar atendimento com novos serviços
+            novos_servicos = atendimento.get('servicos', []) + servicos_para_adicionar
+            novo_valor_servicos = atendimento.get('valor_servicos', 0.0) + valor_total
+            
+            atualizacao = {
+                "servicos": novos_servicos,
+                "valor_servicos": novo_valor_servicos,
+                "valor_total": novo_valor_servicos + atendimento.get('valor_produtos', 0.0),
+                "updated_at": datetime.now()
+            }
+            
+            # Recalcular comissão
+            comissao_pct = atendimento['barbeiro'].get('comissao_percentual', 30.0)
+            atualizacao['comissao_barbeiro'] = atualizacao['valor_total'] * (comissao_pct / 100)
+            
+            if self.db.atualizar("atendimentos", {"_id": atendimento['_id']}, atualizacao):
+                print(f"\nServicos adicionados:")
+                for s in servicos_para_adicionar:
+                    print(f"   - {s['nome']}")
+                
+                valor_fmt = f"R$ {valor_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+                print(f"\nValor adicionado: {valor_fmt}")
+                
+                total_fmt = f"R$ {atualizacao['valor_total']:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+                print(f"Valor total do atendimento: {total_fmt}")
+            else:
+                print("\nErro ao adicionar servicos!")
         else:
-            print("\nNenhum serviço válido foi adicionado.")
+            print("\nNenhum servico valido foi adicionado.")
     
     def finalizar_atendimento(self):
         """Finaliza um atendimento em andamento"""
         print("\n=== FINALIZAR ATENDIMENTO ===\n")
         
         # Listar atendimentos em andamento
-        query = """
-            SELECT 
-                a.id_atendimento,
-                c.nome as cliente,
-                b.nome as barbeiro,
-                a.horario_inicio,
-                a.tipo
-            FROM atendimento a
-            JOIN cliente c ON a.id_cliente = c.id_cliente
-            JOIN barbeiro b ON a.id_barbeiro = b.id_barbeiro
-            WHERE a.status IN ('agendado', 'em_andamento')
-            ORDER BY a.data_atendimento DESC, a.horario_inicio DESC
-            LIMIT 10
-        """
-        
-        atendimentos = self.db.executar_query(query)
+        atendimentos = self.db.buscar_todos(
+            "atendimentos",
+            {"status": {"$in": ["agendado", "em_andamento"]}},
+            ordenacao=[("created_at", -1)],
+            limite=20
+        )
         
         if not atendimentos:
             print("Nenhum atendimento em andamento.")
             return
         
-        print("Atendimentos em andamento:")
+        print("Atendimentos em andamento:\n")
         for atend in atendimentos:
-            horario = str(atend[3])[:5] if atend[3] else "-"
-            print(f"  [{atend[0]}] {atend[1]} com {atend[2]} - {horario} ({atend[4]})")
+            cliente = atend['cliente']['nome']
+            barbeiro = atend['barbeiro']['nome']
+            horario = atend.get('horario_inicio', atend.get('horario_agendado', '-'))
+            tipo = atend['tipo']
+            print(f"  - {cliente} com {barbeiro} - {horario} ({tipo})")
         
-        id_atendimento = input("\nID do atendimento: ").strip()
-        if not id_atendimento.isdigit():
-            print("ID inválido!")
+        # BUSCAR POR NOME DO CLIENTE
+        nome_cliente = input("\nNome do cliente (pode ser parcial): ").strip()
+        
+        if not nome_cliente:
+            print("Nome e obrigatorio!")
             return
         
-        # Calcular valor dos serviços
-        query_servicos = """
-            SELECT COALESCE(SUM(preco_cobrado), 0)
-            FROM atendimento_servico
-            WHERE id_atendimento = %s
-        """
-        valor_servicos = self.db.executar_query(query_servicos, (id_atendimento,))
-        valor_total = float(valor_servicos[0][0]) if valor_servicos else 0.0
+        # Filtrar atendimentos por nome do cliente
+        atendimentos_filtrados = [
+            atend for atend in atendimentos 
+            if nome_cliente.lower() in atend['cliente']['nome'].lower()
+        ]
         
-        if valor_total == 0:
-            print("\nATENÇÃO: Nenhum serviço foi adicionado a este atendimento!")
-            adicionar = input("Deseja adicionar serviços antes de finalizar? (S/N): ").strip().upper()
+        if not atendimentos_filtrados:
+            print(f"\nNenhum atendimento encontrado para cliente '{nome_cliente}'")
+            return
+        
+        # Se encontrou múltiplos, listar para escolher
+        if len(atendimentos_filtrados) > 1:
+            print(f"\nEncontrados {len(atendimentos_filtrados)} atendimentos:\n")
+            for i, atend in enumerate(atendimentos_filtrados, 1):
+                cliente = atend['cliente']['nome']
+                barbeiro = atend['barbeiro']['nome']
+                horario = atend.get('horario_inicio', atend.get('horario_agendado', '-'))
+                tipo = atend['tipo']
+                print(f"[{i}] {cliente} com {barbeiro} - {horario} ({tipo})")
+            
+            escolha = input("\nEscolha o numero: ").strip()
+            try:
+                idx = int(escolha) - 1
+                if idx < 0 or idx >= len(atendimentos_filtrados):
+                    print("Opcao invalida!")
+                    return
+                atendimento = atendimentos_filtrados[idx]
+            except ValueError:
+                print("Opcao invalida!")
+                return
+        else:
+            atendimento = atendimentos_filtrados[0]
+            print(f"\nAtendimento selecionado: {atendimento['cliente']['nome']} com {atendimento['barbeiro']['nome']}")
+        
+        # Verificar serviços
+        valor_servicos = atendimento.get('valor_servicos', 0.0)
+        
+        if valor_servicos == 0:
+            print("\nATENCAO: Nenhum servico foi adicionado a este atendimento!")
+            adicionar = input("Deseja adicionar servicos antes de finalizar? (S/N): ").strip().upper()
             if adicionar == 'S':
-                print("Use a opção 'Adicionar Serviços ao Atendimento' no menu.")
+                print("Use a opcao 'Adicionar Servicos ao Atendimento' no menu.")
                 return
         
-        print(f"\nValor dos serviços: R$ {valor_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.'))
+        print(f"\nValor dos servicos: R$ {valor_servicos:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.'))
         
         # Perguntar sobre produtos
+        valor_produtos = atendimento.get('valor_produtos', 0.0)
+        
         vender_produtos = input("\nDeseja adicionar venda de produtos? (S/N): ").strip().upper()
         if vender_produtos == 'S':
-            valor_produtos = self._vender_produtos(id_atendimento)
-            valor_total += valor_produtos
+            valor_produtos_novos = self._vender_produtos(atendimento)
+            valor_produtos += valor_produtos_novos
+        
+        valor_total = valor_servicos + valor_produtos
         
         # Horário de término
-        horario_fim = input("\nHorário de término (HH:MM) [Enter = agora]: ").strip()
+        horario_fim = input("\nHorario de termino (HH:MM) [Enter = agora]: ").strip()
         if not horario_fim:
             horario_fim = datetime.now().strftime("%H:%M")
         else:
             try:
                 datetime.strptime(horario_fim, "%H:%M")
             except ValueError:
-                print("⚠️  Horário inválido, usando horário atual.")
+                print("Horario invalido, usando horario atual.")
                 horario_fim = datetime.now().strftime("%H:%M")
         
         # Forma de pagamento
         print("\nFormas de pagamento:")
         print("[1] Dinheiro")
         print("[2] PIX")
-        print("[3] Cartão Débito")
-        print("[4] Cartão Crédito")
+        print("[3] Cartao Debito")
+        print("[4] Cartao Credito")
         
         forma_opcao = input("\nEscolha: ").strip()
         formas = {
@@ -395,163 +588,237 @@ class ProcessosNegocio:
         }
         forma_pagamento = formas.get(forma_opcao, 'dinheiro')
         
-        observacoes = input("Observações finais (opcional): ").strip()
-        if not observacoes:
-            observacoes = None
+        observacoes = input("Observacoes finais (opcional): ").strip() or atendimento.get('observacoes')
         
-        # Finalizar
-        query = """
-            UPDATE atendimento 
-            SET horario_fim = %s, 
-                valor_total = %s, 
-                forma_pagamento = %s, 
-                status = 'finalizado',
-                observacoes = COALESCE(%s, observacoes)
-            WHERE id_atendimento = %s
-        """
-        params = (horario_fim, valor_total, forma_pagamento, observacoes, id_atendimento)
+        # Calcular comissão
+        comissao_pct = atendimento['barbeiro'].get('comissao_percentual', 30.0)
+        comissao = valor_total * (comissao_pct / 100)
         
-        if self.db.executar_comando(query, params):
+        # Finalizar atendimento
+        atualizacao = {
+            "horario_fim": horario_fim,
+            "data_atendimento": atendimento.get('data_atendimento') or datetime.now(),
+            "valor_produtos": valor_produtos,
+            "valor_total": valor_total,
+            "comissao_barbeiro": comissao,
+            "forma_pagamento": forma_pagamento,
+            "status": "finalizado",
+            "observacoes": observacoes,
+            "updated_at": datetime.now()
+        }
+        
+        if self.db.atualizar("atendimentos", {"_id": atendimento['_id']}, atualizacao):
             valor_fmt = f"R$ {valor_total:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            print(f"\nAtendimento #{id_atendimento} finalizado!")
-            print(f"  Valor total: {valor_fmt}")
-            print(f"  Pagamento: {forma_pagamento}")
+            comissao_fmt = f"R$ {comissao:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+            
+            print(f"\nAtendimento finalizado com sucesso!")
+            print(f"   Cliente: {atendimento['cliente']['nome']}")
+            print(f"   Barbeiro: {atendimento['barbeiro']['nome']}")
+            print(f"   Valor total: {valor_fmt}")
+            print(f"   Pagamento: {forma_pagamento}")
+            print(f"   Comissao barbeiro ({comissao_pct}%): {comissao_fmt}")
+            
+            # Atualizar estatísticas do cliente
+            self._atualizar_stats_cliente(atendimento['cliente_id'], valor_total)
+        else:
+            print("\nErro ao finalizar atendimento!")
     
-    def _vender_produtos(self, id_atendimento):
+    def _vender_produtos(self, atendimento):
         """Helper: Vende produtos durante atendimento"""
         print("\n📦 VENDA DE PRODUTOS\n")
         
-        produtos = self.db.executar_query(
-            "SELECT id_produto, nome, preco_venda, estoque_atual FROM produto WHERE ativo = TRUE AND estoque_atual > 0 ORDER BY nome"
+        from pymongo import ASCENDING
+        
+        produtos = self.db.buscar_todos(
+            "produtos",
+            {"ativo": True, "estoque_atual": {"$gt": 0}},
+            ordenacao=[("nome", ASCENDING)]
         )
         
         if not produtos:
-            print("Nenhum produto disponível em estoque!")
+            print("⚠️  Nenhum produto disponível em estoque!")
             return 0.0
         
         print("Produtos disponíveis:")
-        for produto in produtos:
-            preco_fmt = f"R$ {produto[2]:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            print(f"  [{produto[0]}] {produto[1]} - {preco_fmt} (Estoque: {produto[3]})")
+        for i, produto in enumerate(produtos, 1):
+            preco = produto['preco_venda']
+            preco_fmt = f"R$ {preco:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+            estoque = produto['estoque_atual']
+            print(f"  [{i}] {produto['nome']} - {preco_fmt} (Estoque: {estoque})")
         
+        produtos_vendidos = atendimento.get('produtos_vendidos', [])
         valor_total_produtos = 0.0
         
         while True:
-            id_produto = input("\nID do produto (ou Enter para finalizar): ").strip()
+            escolha = input("\nNúmero do produto (ou Enter para finalizar): ").strip()
             
-            if not id_produto:
+            if not escolha:
                 break
             
-            if not id_produto.isdigit():
-                print("ID inválido!")
+            if not escolha.isdigit():
+                print("❌ Número inválido!")
                 continue
             
-            # Buscar produto
-            produto_info = self.db.executar_query(
-                "SELECT nome, preco_venda, estoque_atual FROM produto WHERE id_produto = %s AND ativo = TRUE",
-                (id_produto,)
-            )
-            
-            if not produto_info:
-                print("Produto não encontrado!")
+            idx = int(escolha) - 1
+            if idx < 0 or idx >= len(produtos):
+                print("❌ Produto não encontrado!")
                 continue
             
-            nome, preco, estoque = produto_info[0]
+            produto = produtos[idx]
+            estoque = produto['estoque_atual']
             
             if estoque <= 0:
-                print(f"Produto '{nome}' sem estoque!")
+                print(f"❌ Produto '{produto['nome']}' sem estoque!")
                 continue
             
             quantidade = input(f"Quantidade (máx {estoque}): ").strip()
             try:
                 quantidade = int(quantidade)
                 if quantidade <= 0 or quantidade > estoque:
-                    print("Quantidade inválida!")
+                    print("❌ Quantidade inválida!")
                     continue
             except ValueError:
-                print("Quantidade inválida!")
+                print("❌ Quantidade inválida!")
                 continue
             
-            subtotal = float(preco) * quantidade
+            preco = produto['preco_venda']
+            subtotal = preco * quantidade
             
-            try:
-                # Inserir venda
-                query = """
-                    INSERT INTO venda_produto (id_atendimento, id_produto, quantidade, preco_unitario, subtotal)
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-                self.db.cursor.execute(query, (id_atendimento, id_produto, quantidade, preco, subtotal))
-                
-                # Atualizar estoque
-                query_estoque = "UPDATE produto SET estoque_atual = estoque_atual - %s WHERE id_produto = %s"
-                self.db.cursor.execute(query_estoque, (quantidade, id_produto))
-                
-                self.db.conn.commit()
-                
-                subtotal_fmt = f"R$ {subtotal:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-                print(f"{quantidade}x {nome} - {subtotal_fmt}")
-                
-                valor_total_produtos += subtotal
-            except Exception as e:
-                print(f"Erro ao registrar venda: {e}")
-                self.db.conn.rollback()
+            # Adicionar à lista de produtos vendidos
+            produtos_vendidos.append({
+                "produto_id": produto['_id'],
+                "nome": produto['nome'],
+                "quantidade": quantidade,
+                "preco_unitario": preco,
+                "subtotal": subtotal
+            })
+            
+            # Atualizar estoque
+            novo_estoque = estoque - quantidade
+            self.db.atualizar("produtos", {"_id": produto['_id']}, {"estoque_atual": novo_estoque})
+            
+            # Atualizar produto na lista local
+            produto['estoque_atual'] = novo_estoque
+            
+            subtotal_fmt = f"R$ {subtotal:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
+            print(f"✅ {quantidade}x {produto['nome']} - {subtotal_fmt}")
+            
+            valor_total_produtos += subtotal
         
         if valor_total_produtos > 0:
+            # Atualizar atendimento com produtos
+            valor_servicos = atendimento.get('valor_servicos', 0.0)
+            novo_valor_total = valor_servicos + valor_total_produtos
+            comissao_pct = atendimento['barbeiro'].get('comissao_percentual', 30.0)
+            
+            self.db.atualizar("atendimentos", {"_id": atendimento['_id']}, {
+                "produtos_vendidos": produtos_vendidos,
+                "valor_produtos": valor_total_produtos,
+                "valor_total": novo_valor_total,
+                "comissao_barbeiro": novo_valor_total * (comissao_pct / 100),
+                "updated_at": datetime.now()
+            })
+            
             total_fmt = f"R$ {valor_total_produtos:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.')
-            print(f"\nTotal em produtos: {total_fmt}")
+            print(f"\n💰 Total em produtos: {total_fmt}")
         
         return valor_total_produtos
+    
+    def _atualizar_stats_cliente(self, cliente_id, valor_gasto):
+        """Helper: Atualiza estatísticas do cliente"""
+        cliente = self.db.buscar_um("clientes", {"_id": cliente_id})
+        
+        if cliente:
+            stats = cliente.get('stats', {})
+            stats['total_atendimentos'] = stats.get('total_atendimentos', 0) + 1
+            stats['valor_total_gasto'] = stats.get('valor_total_gasto', 0.0) + valor_gasto
+            stats['ultima_visita'] = datetime.now()
+            
+            self.db.atualizar("clientes", {"_id": cliente_id}, {"stats": stats})
     
     def cancelar_atendimento(self):
         """Cancela um atendimento agendado"""
         print("\n=== CANCELAR ATENDIMENTO ===\n")
         
-        # Listar atendimentos agendados
-        query = """
-            SELECT 
-                a.id_atendimento,
-                c.nome as cliente,
-                b.nome as barbeiro,
-                a.data_agendada,
-                a.horario_agendado
-            FROM atendimento a
-            JOIN cliente c ON a.id_cliente = c.id_cliente
-            JOIN barbeiro b ON a.id_barbeiro = b.id_barbeiro
-            WHERE a.status = 'agendado'
-                AND a.data_agendada >= CURRENT_DATE
-            ORDER BY a.data_agendada, a.horario_agendado
-        """
+        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         
-        atendimentos = self.db.executar_query(query)
+        # Listar atendimentos agendados
+        atendimentos = self.db.buscar_todos(
+            "atendimentos",
+            {
+                "status": "agendado",
+                "data_agendada": {"$gte": hoje}
+            },
+            ordenacao=[("data_agendada", 1), ("horario_agendado", 1)]
+        )
         
         if not atendimentos:
             print("Nenhum atendimento agendado para cancelar.")
             return
         
-        print("📋 Atendimentos agendados:")
+        print("Atendimentos agendados:\n")
         for atend in atendimentos:
-            data_fmt = datetime.strptime(str(atend[3]), "%Y-%m-%d").strftime("%d/%m/%Y")
-            horario = str(atend[4])[:5]
-            print(f"  [{atend[0]}] {data_fmt} {horario} - {atend[1]} com {atend[2]}")
+            data_fmt = atend['data_agendada'].strftime("%d/%m/%Y")
+            horario = atend['horario_agendado']
+            cliente = atend['cliente']['nome']
+            barbeiro = atend['barbeiro']['nome']
+            print(f"  - {data_fmt} {horario} - {cliente} com {barbeiro}")
         
-        id_atendimento = input("\nID do atendimento para cancelar: ").strip()
-        if not id_atendimento.isdigit():
-            print("ID inválido!")
+        # BUSCAR POR NOME DO CLIENTE
+        nome_cliente = input("\nNome do cliente (pode ser parcial): ").strip()
+        
+        if not nome_cliente:
+            print("Nome e obrigatorio!")
             return
         
-        motivo = input("Motivo do cancelamento (opcional): ").strip()
-        if motivo:
-            observacao = f"Cancelado. Motivo: {motivo}"
+        # Filtrar atendimentos por nome do cliente
+        atendimentos_filtrados = [
+            atend for atend in atendimentos 
+            if nome_cliente.lower() in atend['cliente']['nome'].lower()
+        ]
+        
+        if not atendimentos_filtrados:
+            print(f"\nNenhum atendimento encontrado para cliente '{nome_cliente}'")
+            return
+        
+        # Se encontrou múltiplos, listar para escolher
+        if len(atendimentos_filtrados) > 1:
+            print(f"\nEncontrados {len(atendimentos_filtrados)} atendimentos:\n")
+            for i, atend in enumerate(atendimentos_filtrados, 1):
+                data_fmt = atend['data_agendada'].strftime("%d/%m/%Y")
+                horario = atend['horario_agendado']
+                cliente = atend['cliente']['nome']
+                barbeiro = atend['barbeiro']['nome']
+                print(f"[{i}] {data_fmt} {horario} - {cliente} com {barbeiro}")
+            
+            escolha = input("\nEscolha o numero: ").strip()
+            try:
+                idx = int(escolha) - 1
+                if idx < 0 or idx >= len(atendimentos_filtrados):
+                    print("Opcao invalida!")
+                    return
+                atendimento = atendimentos_filtrados[idx]
+            except ValueError:
+                print("Opcao invalida!")
+                return
         else:
-            observacao = "Cancelado"
+            atendimento = atendimentos_filtrados[0]
+            print(f"\nAtendimento selecionado: {atendimento['cliente']['nome']} - {atendimento['data_agendada'].strftime('%d/%m/%Y')} {atendimento['horario_agendado']}")
         
-        query = "UPDATE atendimento SET status = 'cancelado', observacoes = %s WHERE id_atendimento = %s"
+        motivo = input("\nMotivo do cancelamento (opcional): ").strip()
+        observacao = f"Cancelado. Motivo: {motivo}" if motivo else "Cancelado"
         
-        if self.db.executar_comando(query, (observacao, id_atendimento)):
+        if self.db.atualizar("atendimentos", {"_id": atendimento['_id']}, {
+            "status": "cancelado",
+            "observacoes": observacao,
+            "updated_at": datetime.now()
+        }):
             print("\nAtendimento cancelado!")
+        else:
+            print("\nErro ao cancelar atendimento!")
 
 
-def menu_processos(db: Database):
+def menu_processos(db: DatabaseMongo):
     """Menu de processos de negócio"""
     processos = ProcessosNegocio(db)
     
@@ -582,6 +849,6 @@ def menu_processos(db: Database):
         elif opcao == "0":
             break
         else:
-            print("\nOpção inválida!")
+            print("\n❌ Opção inválida!")
         
         input("\nPressione ENTER para continuar...")

@@ -1,67 +1,81 @@
-from database import Database
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sql'))
+from database_mongodb import DatabaseMongo
 from crud_clientes import menu_clientes
 from crud_barbeiros import menu_barbeiros
 from crud_servicos import menu_servicos
 from relatorios import menu_relatorios
 from processos import menu_processos
 from crud_produtos import menu_produtos
+import os
 
 def limpar_tela():
     """Limpa a tela do terminal"""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def inicializar_banco(db):
-    """Cria as tabelas do banco de dados"""
-    print("\nVerificando banco de dados...")
+def verificar_estrutura_mongo(db):
+    """Verifica se as coleções existem no MongoDB"""
+    print("\nVerificando estrutura do MongoDB...")
+    
+    colecoes_necessarias = ['clientes', 'barbeiros', 'servicos', 'produtos', 'atendimentos']
+    colecoes_existentes = db.db.list_collection_names()
+    
+    faltando = [col for col in colecoes_necessarias if col not in colecoes_existentes]
+    
+    if faltando:
+        print(f"ATENCAO: Colecoes faltando: {', '.join(faltando)}")
+        print("\nExecute primeiro: python create_mongodb_structure.py")
+        return False
+    
+    print("Todas as colecoes estao criadas!")
+    return True
 
-    query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_name = 'cliente'
-        );
-    """
-    resultado = db.executar_query(query)
+def inicializar_sistema(db):
+    """Inicializa e verifica o sistema MongoDB"""
+    print("\n" + "="*60)
+    print("   VERIFICACAO INICIAL DO SISTEMA")
+    print("="*60)
     
-    if resultado and resultado[0][0]:
-        print("Tabelas já existem!")
-        return
+    # Verificar estrutura
+    if not verificar_estrutura_mongo(db):
+        print("\nATENCAO: Sistema nao pode iniciar sem a estrutura correta!")
+        print("Execute: python create_mongodb_structure.py")
+        return False
     
-    print("Criando tabelas...")
-    try:
-        with open('../sql/schema.sql', 'r', encoding='utf-8') as f:
-            schema = f.read()
-        
-        db.criar_tabelas(schema)
-        print("Banco de dados inicializado!")
-        
-        print("\nDeseja popular o banco com dados de exemplo?")
-        resposta = input("(S/N): ").strip().upper()
-        
-        if resposta == 'S':
-            db.executar_arquivo_sql('../sql/populate.sql')
-            print("Dados de exemplo inseridos!")
-        
-    except FileNotFoundError:
-        print("Arquivo schema.sql não encontrado. Certifique-se de criar a pasta sql/ com o arquivo.")
-    except Exception as e:
-        print(f"Erro ao inicializar banco: {e}")
+    # Verificar se já tem dados
+    total_docs = sum([
+        db.clientes.count_documents({}),
+        db.barbeiros.count_documents({}),
+        db.servicos.count_documents({}),
+        db.produtos.count_documents({})
+    ])
+    
+    if total_docs == 0:
+        print("\nBanco de dados esta vazio!")
+        print("Execute: python populate_mongodb.py")
+        resposta = input("\nDeseja continuar mesmo assim? (S/N): ").strip().upper()
+        if resposta != 'S':
+            return False
+    
+    return True
 
 def menu_principal(db):
     """Menu principal do sistema"""
     while True:
         print("\n" + "="*60)
-        print("SISTEMA DE GERENCIAMENTO - BARBEARIA")
+        print("   SISTEMA DE GERENCIAMENTO - BARBEARIA (MongoDB)")
         print("="*60)
         print("\n[1] Gerenciar Clientes")
         print("[2] Gerenciar Barbeiros")
-        print("[3] Gerenciar Serviços")
+        print("[3] Gerenciar Servicos")
         print("[4] Gerenciar Produtos")
-        print("[5] Processos de Negócio (Agendamentos/Atendimentos)")
-        print("[6] Relatórios")
+        print("[5] Processos de Negocio (Agendamentos/Atendimentos)")
+        print("[6] Relatorios")
         print("[0] Sair")
         print("-"*60)
         
-        opcao = input("\nEscolha uma opção: ").strip()
+        opcao = input("\nEscolha uma opcao: ").strip()
         
         if opcao == "1":
             menu_clientes(db)
@@ -76,28 +90,36 @@ def menu_principal(db):
         elif opcao == "6":
             menu_relatorios(db)
         elif opcao == "0":
-            print("\nEncerrando sistema... Até logo! 👋")
+            print("\nEncerrando sistema... Ate logo!")
             break
         else:
-            print("\nOpção inválida! Tente novamente.")
+            print("\nOpcao invalida! Tente novamente.")
+        
+        input("\nPressione ENTER para continuar...")
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("INICIANDO SISTEMA DA BARBEARIA")
+    print("   INICIANDO SISTEMA DA BARBEARIA - MONGODB")
     print("="*60)
     
-    db = Database()
-    db.conectar()
-    
-    # Inicializar banco (criar tabelas se não existirem)
-    inicializar_banco(db)
-    
     try:
+        # Conectar ao MongoDB
+        db = DatabaseMongo()
+        
+        # Verificar e inicializar sistema
+        if not inicializar_sistema(db):
+            print("\nERRO: Sistema nao pode iniciar!")
+            exit(1)
+        
+        # Executar menu principal
         menu_principal(db)
+        
     except KeyboardInterrupt:
-        print("\n\nSistema interrompido pelo usuário.")
+        print("\n\nATENCAO: Sistema interrompido pelo usuario.")
     except Exception as e:
-        print(f"\nErro inesperado: {e}")
+        print(f"\nERRO inesperado: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        db.desconectar()
+        db.fechar()
         print("\nObrigado por usar o sistema!")
