@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
 def criar_estrutura_mongodb():
